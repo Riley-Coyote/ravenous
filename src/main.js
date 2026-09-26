@@ -7,8 +7,9 @@ import { audioInit, sfx as playSfx, setAmbient, setBossMusic, musicTick, toggleM
 import { World, TILE, T } from './level.js';
 import { paintRoom, layerOrigin, VIEW_W, VIEW_H, PALETTES, drawDoor, drawMembrane, makeVignette, drawPool, drawCrackedBlock, drawVent } from './art.js';
 import { FX } from './fx.js';
-import { Player, drawSamus, renderGhost, drawDevourHand } from './player.js';
+import { Player, drawSamus, drawSamusNormals, renderGhost, drawDevourHand } from './player.js';
 import { makeEnemy } from './enemies.js';
+import { setCreatureRim } from './creatures.js';
 import { HollowBrim, drawHat } from './boss.js';
 import { Thornheart } from './thornheart.js';
 import { HUD, drawTitle, drawPause, drawEnd, drawDeath, drawRotate, titleLayout } from './hud.js';
@@ -109,6 +110,11 @@ addEventListener('blur', () => {
   }
 });
 g.audioParts = audioParts;
+g.drawSamusNormals = (c) => {
+  const p = g.player;
+  if (p.inv > 0 && p.state !== 'devour' && p.state !== 'dash' && Math.floor(p.inv * 14) % 2 === 1) return;
+  drawSamusNormals(c, p.pose());
+};
 setTimeout(() => { g.music = music; }, 0);
 
 // ---------------------------------------------------------------- services used by entities
@@ -1712,6 +1718,7 @@ function render() {
   drawPickups();
   drawHatProp();
   drawBombs();
+  setCreatureRim(PALETTES[g.room?.theme]?.rim);
   for (const e of g.enemies) if (e.room === g.room?.id || overlap(vw, e)) { e.draw(ctx, g); e.drawStatus(ctx, g); }
   if (g.boss) g.boss.draw(ctx, g);
   drawGhosts();
@@ -1731,6 +1738,7 @@ function render() {
   drawDevourPrompts();
   for (const r of cam.visible) drawRoomFront(r);
   ctx.restore();
+  drawBokeh(cam);
   if (g.state === 'title') {
     ctx.fillStyle = 'rgba(4,3,3,0.45)';
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
@@ -1765,6 +1773,63 @@ function render() {
     if (g.touch && g.input.lastDevice === 'touch') g.touch.draw(uctx, false);
   }
   drawOverlays();
+}
+
+// ---------------------------------------------------------------- out-of-focus dust in front of the lens
+
+const BOKEH = {
+  sand: { rgb: [255, 214, 160], n: 14, vx: [-10, 10], vy: [-6, 8], size: [12, 40], a: [0.05, 0.13] },
+  ruin: { rgb: [215, 228, 255], n: 12, vx: [-8, 8], vy: [-4, 6], size: [12, 36], a: [0.05, 0.11] },
+  ice: { rgb: [235, 248, 255], n: 24, vx: [-14, 6], vy: [22, 46], size: [6, 30], a: [0.07, 0.2] },
+  magma: { rgb: [255, 140, 50], n: 20, vx: [-10, 10], vy: [-46, -16], size: [4, 18], a: [0.14, 0.34] },
+  hive: { rgb: [205, 255, 150], n: 16, vx: [-8, 8], vy: [-8, 6], size: [6, 26], a: [0.07, 0.17] },
+  lab: { rgb: [175, 165, 255], n: 10, vx: [-6, 6], vy: [-4, 4], size: [10, 30], a: [0.05, 0.1] },
+  arena: { rgb: [185, 165, 255], n: 12, vx: [-6, 6], vy: [-10, -2], size: [8, 30], a: [0.05, 0.12] },
+};
+const bokehSprites = {};
+const bokeh = Array.from({ length: 24 }, (_, i) => ({ x: rand(VIEW_W + 300), y: rand(VIEW_H + 300), d: rand(1.25, 1.9), r: rand(1), a: rand(1), vr: rand(1), ph: rand(TAU), i }));
+let bokehLast = performance.now();
+
+function bokehSprite(theme, rgb) {
+  if (bokehSprites[theme]) return bokehSprites[theme];
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = 64;
+  const c = cv.getContext('2d');
+  const g = c.createRadialGradient(32, 32, 0, 32, 32, 31);
+  const col = rgb.join(',');
+  g.addColorStop(0, `rgba(${col},0.55)`);
+  g.addColorStop(0.72, `rgba(${col},0.62)`);
+  g.addColorStop(0.9, `rgba(${col},0.8)`);
+  g.addColorStop(1, `rgba(${col},0)`);
+  c.fillStyle = g;
+  c.beginPath(); c.arc(32, 32, 31, 0, TAU); c.fill();
+  bokehSprites[theme] = cv;
+  return cv;
+}
+
+function drawBokeh(cam) {
+  const theme = g.room?.theme;
+  const B = BOKEH[theme];
+  const now = performance.now();
+  const dt = Math.min(0.1, (now - bokehLast) / 1000);
+  bokehLast = now;
+  if (!B || g.state === 'title') return;
+  const spr = bokehSprite(theme, B.rgb);
+  const WW = VIEW_W + 300, HH = VIEW_H + 300;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let k = 0; k < B.n; k++) {
+    const p = bokeh[k];
+    p.x += lerp(B.vx[0], B.vx[1], p.vr) * dt;
+    p.y += lerp(B.vy[0], B.vy[1], p.vr) * dt;
+    const sx = ((((p.x - cam.C.x * p.d) % WW) + WW) % WW) - 150;
+    const sy = ((((p.y - cam.C.y * p.d) % HH) + HH) % HH) - 150;
+    const size = lerp(B.size[0], B.size[1], p.r) * (p.d - 0.6);
+    const tw = 0.75 + 0.25 * Math.sin(g.realTime * 0.9 + p.ph);
+    ctx.globalAlpha = lerp(B.a[0], B.a[1], p.a) * tw;
+    ctx.drawImage(spr, sx - size, sy - size, size * 2, size * 2);
+  }
+  ctx.restore();
 }
 
 function drawLetterbox() {
@@ -2085,7 +2150,9 @@ function drawPlayer() {
     ctx.beginPath(); ctx.arc(p.cx, p.cy, 70, 0, TAU); ctx.fill();
     ctx.restore();
   }
-  drawSamus(ctx, p.pose());
+  const pz = p.pose();
+  pz.rim = PALETTES[g.room?.theme]?.rim;
+  drawSamus(ctx, pz);
   const vx = p.cx + p.facing * 8, vy = p.y + 2;
   g.fx.light(vx, vy, 36, p.ravenousT > 0 ? '255,80,200' : '190,255,120', 0.35);
 }

@@ -3,6 +3,7 @@
 import { clamp, lerp, approach, rand, TAU, easeOutCubic, makeCanvas } from './util.js';
 import { moveEntity, T, TILE } from './level.js';
 import { setCharge } from './audio.js';
+import { drawSuit, drawBall } from './samus.js';
 
 export const PHYS = {
   G: 2600, MAX_FALL: 1150, RUN: 330, ACC_G: 3400, DEC_G: 3800, ACC_A: 2500, JUMP_V: 960,
@@ -472,18 +473,6 @@ export class Player {
 
 // ---------------------------------------------------------------- the rig
 
-const SUIT = {
-  red: ['#ff8a70', '#cf4a3b', '#5b1510'],
-  redB: ['#b8523f', '#8c2f25', '#3a0c08'],
-  blue: ['#7aaaff', '#2f63c9', '#10265a'],
-  blueB: ['#4f78c8', '#1f4696', '#0a1a40'],
-  white: ['#ffffff', '#dbe3ef', '#7d8aa0'],
-  visor: ['#f3ffb0', '#b6ec48', '#3a7414'],
-  visorRav: ['#ffd0f2', '#ff4fbf', '#6a0f4a'],
-  dark: '#0b1020',
-  light: 'rgba(190,255,110,',
-};
-
 function computePose(p) {
   const s = { hipY: -44, lean: 0, fr: { th: 0.1, kn: 0.12 }, bk: { th: -0.12, kn: 0.12 }, arm: p.aimAngle, off: { sh: 0.3, el: 1.1 }, headY: 0 };
   const t = p.animT;
@@ -555,274 +544,15 @@ function computePose(p) {
   return s;
 }
 
-function line(c, a, b) {
-  c.beginPath();
-  c.moveTo(a.x, a.y);
-  c.lineTo(b.x, b.y);
-  c.stroke();
-}
-
-function capsule(c, a, b, r, col) {
-  c.lineCap = 'round';
-  c.strokeStyle = col[2];
-  c.lineWidth = r * 2 + 2;
-  line(c, a, b);
-  c.strokeStyle = col[1];
-  c.lineWidth = r * 2;
-  line(c, a, b);
-  const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1;
-  let nx = -dy / len, ny = dx / len;
-  if (ny > 0 || (ny === 0 && nx > 0)) { nx = -nx; ny = -ny; }
-  const o = r * 0.42;
-  c.strokeStyle = col[0];
-  c.lineWidth = r * 0.62;
-  c.globalAlpha *= 0.85;
-  line(c, { x: a.x + nx * o + (dx / len) * r * 0.3, y: a.y + ny * o + (dy / len) * r * 0.3 }, { x: b.x + nx * o - (dx / len) * r * 0.3, y: b.y + ny * o - (dy / len) * r * 0.3 });
-  c.globalAlpha /= 0.85;
-}
-
-function ball(c, x, y, r, col) {
-  const g = c.createRadialGradient(x - r * 0.38, y - r * 0.42, r * 0.1, x, y, r);
-  g.addColorStop(0, col[0]);
-  g.addColorStop(0.45, col[1]);
-  g.addColorStop(1, col[2]);
-  c.fillStyle = g;
-  c.beginPath();
-  c.arc(x, y, r, 0, TAU);
-  c.fill();
-  c.strokeStyle = 'rgba(0,0,0,0.55)';
-  c.lineWidth = 1;
-  c.stroke();
-}
-
-function leg(c, hip, L, back) {
-  const TH = 20, SH = 21;
-  const k = { x: hip.x + Math.sin(L.th) * TH, y: hip.y + Math.cos(L.th) * TH };
-  const sa = L.th - L.kn;
-  const a = { x: k.x + Math.sin(sa) * SH, y: k.y + Math.cos(sa) * SH };
-  const blue = back ? SUIT.blueB : SUIT.blue;
-  capsule(c, hip, k, 7.2, blue);
-  capsule(c, k, a, 6.1, blue);
-  const fd = { x: Math.cos(sa), y: -Math.sin(sa) };
-  capsule(c, { x: a.x - fd.x * 2, y: a.y - fd.y * 2 + 1 }, { x: a.x + fd.x * 8, y: a.y + fd.y * 8 + 1 }, 4.6, back ? SUIT.blueB : SUIT.blue);
-  if (!back) {
-    c.strokeStyle = 'rgba(230,238,250,0.85)';
-    c.lineWidth = 2.2;
-    c.lineCap = 'round';
-    line(c, { x: lerp(hip.x, k.x, 0.25) + 2, y: lerp(hip.y, k.y, 0.25) }, { x: lerp(hip.x, k.x, 0.7) + 2, y: lerp(hip.y, k.y, 0.7) });
-  }
-  ball(c, k.x + 1.2, k.y, back ? 4.6 : 5.4, back ? SUIT.redB : SUIT.red);
-  if (!back) {
-    c.fillStyle = SUIT.light + '0.9)';
-    c.beginPath(); c.arc(k.x + 2.5, k.y + 0.5, 1.3, 0, TAU); c.fill();
-  }
-}
-
-function arm(c, sh, A, back, reachGlow) {
-  const UL = 13, FL = 13;
-  const e = { x: sh.x + Math.sin(A.sh) * UL, y: sh.y + Math.cos(A.sh) * UL };
-  const fa = A.sh + A.el;
-  const hnd = { x: e.x + Math.sin(fa) * FL, y: e.y + Math.cos(fa) * FL };
-  const col = back ? SUIT.blueB : SUIT.blue;
-  capsule(c, sh, e, 5.2, col);
-  capsule(c, e, hnd, 4.7, col);
-  if (reachGlow > 0) {
-    c.save();
-    c.globalCompositeOperation = 'lighter';
-    const g = c.createRadialGradient(hnd.x, hnd.y, 0, hnd.x, hnd.y, 16);
-    g.addColorStop(0, `rgba(255,120,220,${0.9 * reachGlow})`);
-    g.addColorStop(1, 'rgba(255,60,180,0)');
-    c.fillStyle = g;
-    c.beginPath(); c.arc(hnd.x, hnd.y, 16, 0, TAU); c.fill();
-    c.restore();
-  }
-  ball(c, hnd.x, hnd.y, 4.4, back ? SUIT.redB : SUIT.red);
-  return hnd;
-}
-
-function torso(c, H, lean) {
-  const u = { x: Math.sin(lean), y: -Math.cos(lean) };
-  const n = { x: Math.cos(lean), y: Math.sin(lean) };
-  const P = (a, b) => ({ x: H.x + u.x * a + n.x * b, y: H.y + u.y * a + n.y * b });
-  const pts = [P(-2, -7), P(-2, 7), P(12, 9.5), P(22, 12), P(27, 6), P(27, -9), P(20, -11), P(10, -8)];
-  const g = c.createLinearGradient(P(0, -10).x, P(26, 0).y, P(10, 12).x, P(0, 12).y);
-  g.addColorStop(0, SUIT.red[0]);
-  g.addColorStop(0.45, SUIT.red[1]);
-  g.addColorStop(1, SUIT.red[2]);
-  c.fillStyle = g;
-  c.beginPath();
-  pts.forEach((p, i) => (i ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y)));
-  c.closePath();
-  c.fill();
-  c.strokeStyle = 'rgba(0,0,0,0.55)';
-  c.lineWidth = 1;
-  c.stroke();
-  // pale abdomen plating
-  const ab = [P(1, -5), P(1, 6), P(11, 7.5), P(12, -4)];
-  c.fillStyle = 'rgba(214,224,238,0.9)';
-  c.beginPath();
-  ab.forEach((p, i) => (i ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y)));
-  c.closePath();
-  c.fill();
-  c.strokeStyle = 'rgba(40,50,70,0.6)';
-  c.beginPath();
-  const m1 = P(4.5, -5), m2 = P(4.5, 7);
-  c.moveTo(m1.x, m1.y); c.lineTo(m2.x, m2.y);
-  c.stroke();
-  const lp = P(18, 7);
-  c.fillStyle = SUIT.light + '0.95)';
-  c.beginPath(); c.arc(lp.x, lp.y, 1.8, 0, TAU); c.fill();
-  return P;
-}
-
-function helmet(c, hc, rav) {
-  ball(c, hc.x, hc.y, 10.6, SUIT.red);
-  c.strokeStyle = 'rgba(255,190,170,0.55)';
-  c.lineWidth = 1.2;
-  c.beginPath(); c.arc(hc.x - 1, hc.y, 8.5, -2.6, -1.2); c.stroke();
-  const vc = rav ? SUIT.visorRav : SUIT.visor;
-  const g = c.createLinearGradient(hc.x + 2, hc.y - 6, hc.x + 11, hc.y + 4);
-  g.addColorStop(0, vc[0]);
-  g.addColorStop(0.5, vc[1]);
-  g.addColorStop(1, vc[2]);
-  c.fillStyle = g;
-  c.beginPath();
-  c.moveTo(hc.x + 0.5, hc.y - 4.5);
-  c.quadraticCurveTo(hc.x + 10.5, hc.y - 7, hc.x + 12, hc.y + 0.5);
-  c.quadraticCurveTo(hc.x + 8.5, hc.y + 5, hc.x + 1.5, hc.y + 3);
-  c.closePath();
-  c.fill();
-  c.strokeStyle = 'rgba(0,0,0,0.6)';
-  c.lineWidth = 1;
-  c.stroke();
-  c.strokeStyle = 'rgba(255,255,255,0.85)';
-  c.lineWidth = 1.1;
-  c.beginPath();
-  c.moveTo(hc.x + 3, hc.y - 4.2);
-  c.quadraticCurveTo(hc.x + 8, hc.y - 5.4, hc.x + 10, hc.y - 3);
-  c.stroke();
-  c.fillStyle = 'rgba(20,10,10,0.85)';
-  c.beginPath();
-  c.ellipse(hc.x + 4, hc.y + 7.5, 6, 3, 0.2, 0, TAU);
-  c.fill();
-}
-
-function cannon(c, pv, ang, p) {
-  const d = { x: Math.cos(ang), y: Math.sin(ang) };
-  const end = { x: pv.x + d.x * 30, y: pv.y + d.y * 30 };
-  capsule(c, { x: pv.x - d.x * 4, y: pv.y - d.y * 4 }, end, 7.6, SUIT.blue);
-  const band = (t, col, w) => {
-    const q = { x: pv.x + d.x * 30 * t, y: pv.y + d.y * 30 * t };
-    c.strokeStyle = col;
-    c.lineWidth = w;
-    c.lineCap = 'butt';
-    c.beginPath();
-    c.moveTo(q.x - d.y * 7.8, q.y + d.x * 7.8);
-    c.lineTo(q.x + d.y * 7.8, q.y - d.x * 7.8);
-    c.stroke();
-  };
-  band(0.35, 'rgba(225,232,245,0.95)', 3);
-  band(0.72, 'rgba(10,20,40,0.8)', 2);
-  const mz = { x: end.x + d.x * 4, y: end.y + d.y * 4 };
-  c.fillStyle = '#0a0f1c';
-  c.beginPath(); c.ellipse(mz.x, mz.y, 3.2, 6.4, ang, 0, TAU); c.fill();
-  const glowA = 0.55 + p.charge * 0.45;
-  c.fillStyle = p.rav ? `rgba(255,110,210,${glowA})` : `rgba(200,255,120,${glowA})`;
-  c.beginPath(); c.arc(pv.x + d.x * 18, pv.y + d.y * 18, 2, 0, TAU); c.fill();
-  if (p.charge > 0.05) {
-    c.save();
-    c.globalCompositeOperation = 'lighter';
-    const r = 5 + p.charge * 12 + Math.sin(p.animT * 40) * 1.5 * p.charge;
-    const g = c.createRadialGradient(mz.x, mz.y, 0, mz.x, mz.y, r * 1.8);
-    const col = p.rav ? '255,100,210' : '255,210,120';
-    g.addColorStop(0, `rgba(255,255,255,${0.9 * p.charge})`);
-    g.addColorStop(0.3, `rgba(${col},${0.8 * p.charge})`);
-    g.addColorStop(1, `rgba(${col},0)`);
-    c.fillStyle = g;
-    c.beginPath(); c.arc(mz.x, mz.y, r * 1.8, 0, TAU); c.fill();
-    c.restore();
-  }
-}
-
-function drawMorphBall(c, p) {
-  const x = p.x, y = p.y - 14, R = 14;
-  c.save();
-  c.globalCompositeOperation = 'lighter';
-  const gl = c.createRadialGradient(x, y, 0, x, y, R * 2.6);
-  gl.addColorStop(0, p.rav ? 'rgba(255,90,200,0.4)' : 'rgba(255,170,110,0.32)');
-  gl.addColorStop(1, 'rgba(255,120,80,0)');
-  c.fillStyle = gl;
-  c.beginPath(); c.arc(x, y, R * 2.6, 0, TAU); c.fill();
-  c.globalCompositeOperation = 'source-over';
-  ball(c, x, y, R, SUIT.blue);
-  c.save();
-  c.translate(x, y);
-  c.rotate(p.rollA);
-  c.fillStyle = SUIT.red[1];
-  for (let k = 0; k < 2; k++) {
-    c.rotate(Math.PI);
-    c.beginPath();
-    c.arc(0, 0, R - 2, -0.55, 0.55);
-    c.arc(0, 0, R * 0.52, 0.55, -0.55, true);
-    c.closePath();
-    c.fill();
-  }
-  c.strokeStyle = 'rgba(8,16,40,0.9)';
-  c.lineWidth = 1.6;
-  for (let k = 0; k < 4; k++) {
-    c.rotate(Math.PI / 2);
-    c.beginPath(); c.moveTo(R * 0.5, 0); c.lineTo(R - 0.5, 0); c.stroke();
-  }
-  c.restore();
-  const pulse = 0.6 + 0.4 * Math.sin(p.animT * 8);
-  c.fillStyle = p.rav ? `rgba(255,120,220,${0.7 * pulse + 0.3})` : `rgba(200,255,120,${0.7 * pulse + 0.3})`;
-  c.beginPath(); c.arc(x, y, 3.4, 0, TAU); c.fill();
-  c.fillStyle = 'rgba(255,255,255,0.5)';
-  c.beginPath(); c.ellipse(x - 5, y - 6, 4, 2.2, -0.6, 0, TAU); c.fill();
-  c.restore();
-}
-
 export function drawSamus(c, p) {
-  if (p.ball) {
-    drawMorphBall(c, p);
-    return;
-  }
-  const s = computePose(p);
-  c.save();
-  c.translate(p.x, p.y);
-  c.scale(p.facing, 1);
-  if (p.landT > 0) {
-    const k = p.landT / 0.12;
-    c.scale(1 + 0.07 * k, 1 - 0.09 * k);
-  }
-  if (p.spin) {
-    c.translate(0, -44);
-    c.rotate(p.spinA);
-    c.translate(0, 44);
-  }
-  const H = { x: 0, y: s.hipY };
-  const up = (d, side = 0) => ({ x: H.x + Math.sin(s.lean) * d + Math.cos(s.lean) * side, y: H.y - Math.cos(s.lean) * d + Math.sin(s.lean) * side });
-  const shoulder = up(25, 1);
-  const head = up(36.5, 3);
-  head.y += s.headY;
+  if (p.ball) drawBall(c, p);
+  else drawSuit(c, p, computePose(p));
+}
 
-  leg(c, { x: H.x - 3, y: H.y }, s.bk, true);
-  const reach = s.off.reach ? 1 : 0;
-  arm(c, { x: shoulder.x - 5, y: shoulder.y + 2 }, s.off, true, reach);
-  ball(c, shoulder.x - 7, shoulder.y + 1, 9, SUIT.blueB);
-  torso(c, H, s.lean);
-  leg(c, { x: H.x + 2, y: H.y }, s.fr, false);
-  helmet(c, head, p.rav);
-  // front pauldron, the big sphere
-  ball(c, shoulder.x + 2, shoulder.y + 3, 11.8, SUIT.blue);
-  c.strokeStyle = 'rgba(12,28,70,0.9)';
-  c.lineWidth = 2.2;
-  c.beginPath(); c.arc(shoulder.x + 2, shoulder.y + 3, 7.5, 0.4, 2.3); c.stroke();
-  c.strokeStyle = 'rgba(230,240,255,0.8)';
-  c.lineWidth = 1.2;
-  c.beginPath(); c.arc(shoulder.x + 2, shoulder.y + 3, 10.2, -2.4, -1.4); c.stroke();
-  cannon(c, { x: shoulder.x + 3, y: shoulder.y + 8 }, s.arm, p);
-  c.restore();
+// the same shapes, painted as surface directions for the lighting pass
+export function drawSamusNormals(c, p) {
+  if (p.ball) drawBall(c, p, 'normal');
+  else drawSuit(c, p, computePose(p), 'normal');
 }
 
 // Blue holographic afterimage for the phase shift, rendered once per snapshot.

@@ -73,7 +73,8 @@ export function paintRoom(world, room, nz) {
 
 // ---------------------------------------------------------------- terrain
 
-export const MATERIAL = { sand: 1, ruin: 2, ice: 3, magma: 4, hive: 5, lab: 6, arena: 7 };
+// material 7 is Samus's armor, so the arena shares the dressed-stone material
+export const MATERIAL = { sand: 1, ruin: 2, ice: 3, magma: 4, hive: 5, lab: 6, arena: 2 };
 
 function paintTerrain(world, room, nz) {
   const W = room.pw / S, H = room.ph / S, cpt = TILE / S;

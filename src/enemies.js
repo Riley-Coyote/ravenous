@@ -3,6 +3,7 @@
 
 import { clamp, lerp, rand, TAU, approach, sign } from './util.js';
 import { moveEntity, groundAhead, wallAhead } from './level.js';
+import { drawCreature, paintCrawler, paintWingblade, paintBrute, paintJelly, paintSpitter, paintDrone } from './creatures.js';
 
 const G = 2400;
 
@@ -199,80 +200,11 @@ export class Crawler extends Enemy {
   }
 
   draw(c) {
-    const ox = this.offsetShake();
-    const drawBody = (flash) => {
-      c.save();
-      c.translate(this.cx + ox, this.y + this.h);
-      c.scale(this.facing, 1);
-      const walk = this.state === 'patrol' ? this.anim * 14 : this.state === 'stunned' ? this.anim * 30 : 0;
-      c.lineCap = 'round';
-      for (let k = 0; k < 3; k++) {
-        for (const side of [-1, 1]) {
-          const bx = -12 + k * 11, ph = walk + k * 1.9 + (side > 0 ? Math.PI : 0);
-          const lift = Math.max(0, Math.sin(ph)) * 5;
-          c.strokeStyle = flash ? '#fff' : side > 0 ? '#2a1712' : '#1a0d0a';
-          c.lineWidth = 2.4;
-          c.beginPath();
-          c.moveTo(bx, -12);
-          c.lineTo(bx + 6 + Math.cos(ph) * 3, -18 - lift);
-          c.lineTo(bx + 10 + Math.cos(ph) * 5, -lift * 0.3);
-          c.stroke();
-        }
-      }
-      const rear = this.state === 'windup' ? Math.min(1, this.t / 0.4) : 0;
-      c.rotate(-0.25 * rear);
-      const g2 = c.createLinearGradient(0, -26, 0, -6);
-      const sk = SKINS[this.skin || 'sand'];
-      g2.addColorStop(0, flash ? '#fff' : sk[0]);
-      g2.addColorStop(0.5, flash ? '#fff' : sk[1]);
-      g2.addColorStop(1, flash ? '#fff' : sk[2]);
-      c.fillStyle = g2;
-      c.beginPath();
-      c.ellipse(-2, -14, 22, 11, 0, 0, TAU);
-      c.fill();
-      c.strokeStyle = 'rgba(0,0,0,0.6)';
-      c.lineWidth = 1;
-      c.stroke();
-      if (!flash) {
-        c.strokeStyle = sk[3];
-        for (let k = 0; k < 3; k++) {
-          c.beginPath();
-          c.arc(-10 + k * 8, -14, 10, -2.2, -0.9);
-          c.stroke();
-        }
-        c.fillStyle = '#1a0c08';
-        c.beginPath(); c.ellipse(17, -12, 7, 6, 0, 0, TAU); c.fill();
-        c.fillStyle = this.counterable ? '#fff6c8' : sk[4];
-        c.beginPath(); c.arc(20, -13, 1.8, 0, TAU); c.arc(17, -15, 1.4, 0, TAU); c.fill();
-        c.strokeStyle = '#1a0c08';
-        c.lineWidth = 2;
-        c.beginPath(); c.moveTo(22, -9); c.quadraticCurveTo(27, -8, 26, -4); c.stroke();
-      }
-      c.restore();
-    };
-    c.save();
-    this.devourTint(c);
-    drawBody(false);
-    this.hitFlash(c, drawBody);
-    c.restore();
-    c.save();
-    c.globalCompositeOperation = 'lighter';
-    c.fillStyle = this.skin === 'ice' ? 'rgba(120,220,255,0.35)' : 'rgba(255,140,60,0.35)';
-    c.beginPath(); c.arc(this.cx + this.facing * 18, this.y + this.h - 13, 8, 0, TAU); c.fill();
-    if (this.skin === 'magma' && !this.beingDevoured) {
-      c.fillStyle = `rgba(255,110,30,${0.25 + 0.15 * Math.sin(this.anim * 6)})`;
-      c.beginPath(); c.ellipse(this.cx, this.y + this.h - 14, 20, 9, 0, 0, TAU); c.fill();
-    }
-    c.restore();
+    drawCreature(c, this, paintCrawler);
   }
 }
 
-// carapace colors per region: top, mid, belly, seam, eye
-const SKINS = {
-  sand: ['#9a5a3c', '#5a2e1e', '#23110b', 'rgba(220,160,110,0.35)', '#ff9a3a'],
-  ice: ['#cfe6f5', '#6f93b3', '#223449', 'rgba(230,248,255,0.5)', '#7fe8ff'],
-  magma: ['#4a2320', '#23100e', '#0c0505', 'rgba(255,120,40,0.7)', '#ffb040'],
-};
+
 
 // ---------------------------------------------------------------- wingblade
 
@@ -340,62 +272,7 @@ export class Wingblade extends Enemy {
   }
 
   draw(c) {
-    const ox = this.offsetShake();
-    const drawBody = (flash) => {
-      c.save();
-      c.translate(this.cx + ox, this.cy);
-      c.scale(this.facing, 1);
-      const tilt = this.state === 'swoop' ? clamp(this.vy / 900, -0.6, 0.6) : this.state === 'stunned' ? 0.9 : 0.1 * Math.sin(this.anim * 2);
-      c.rotate(tilt);
-      const flap = this.state === 'stunned' ? 0.2 : Math.sin(this.anim * (this.state === 'windup' ? 50 : 26));
-      for (const back of [true, false]) {
-        c.save();
-        c.translate(-2, -8);
-        c.rotate((back ? -0.5 : -0.25) + flap * 0.55);
-        c.fillStyle = flash ? 'rgba(255,255,255,0.9)' : back ? 'rgba(120,150,170,0.22)' : 'rgba(170,200,220,0.32)';
-        c.beginPath();
-        c.moveTo(0, 0);
-        c.quadraticCurveTo(-14, -34, -46, -30);
-        c.quadraticCurveTo(-28, -12, 0, 0);
-        c.fill();
-        if (!flash) {
-          c.strokeStyle = 'rgba(210,235,255,0.45)';
-          c.lineWidth = 1;
-          c.stroke();
-          c.beginPath(); c.moveTo(-4, -4); c.lineTo(-38, -27); c.stroke();
-        }
-        c.restore();
-      }
-      const bg = c.createLinearGradient(0, -12, 0, 12);
-      bg.addColorStop(0, flash ? '#fff' : '#5b6f78');
-      bg.addColorStop(1, flash ? '#fff' : '#161d22');
-      c.fillStyle = bg;
-      c.beginPath(); c.ellipse(-8, 4, 17, 7, 0.25, 0, TAU); c.fill();
-      c.beginPath(); c.ellipse(8, -1, 9, 8, 0, 0, TAU); c.fill();
-      c.strokeStyle = 'rgba(0,0,0,0.6)'; c.lineWidth = 1;
-      c.beginPath(); c.ellipse(-8, 4, 17, 7, 0.25, 0, TAU); c.stroke();
-      if (!flash) {
-        c.strokeStyle = 'rgba(160,190,200,0.35)';
-        for (let k = 0; k < 4; k++) { c.beginPath(); c.arc(-16 + k * 6, 6, 5, -1.9, -1.1); c.stroke(); }
-        c.strokeStyle = '#0f1417'; c.lineWidth = 1.8; c.lineCap = 'round';
-        c.beginPath(); c.moveTo(14, 3); c.quadraticCurveTo(22, 6, 20, 13); c.stroke();
-        c.beginPath(); c.moveTo(12, 5); c.quadraticCurveTo(15, 12, 11, 16); c.stroke();
-        for (let k = 0; k < 3; k++) { c.beginPath(); c.moveTo(-2 + k * 5, 8); c.lineTo(-6 + k * 5, 18 + Math.sin(this.anim * 6 + k) * 2); c.stroke(); }
-        c.fillStyle = this.counterable ? '#fffbe0' : '#ffd24a';
-        c.beginPath(); c.arc(12, -2, 2.6, 0, TAU); c.fill();
-      }
-      c.restore();
-    };
-    c.save();
-    this.devourTint(c);
-    drawBody(false);
-    this.hitFlash(c, drawBody);
-    c.restore();
-    c.save();
-    c.globalCompositeOperation = 'lighter';
-    c.fillStyle = 'rgba(255,210,90,0.3)';
-    c.beginPath(); c.arc(this.cx + this.facing * 12, this.cy - 2, 9, 0, TAU); c.fill();
-    c.restore();
+    drawCreature(c, this, paintWingblade);
   }
 }
 
@@ -468,99 +345,7 @@ export class Brute extends Enemy {
   }
 
   draw(c) {
-    const ox = this.offsetShake();
-    const drawBody = (flash) => {
-      c.save();
-      c.translate(this.cx + ox, this.y + this.h);
-      c.scale(this.facing, 1);
-      const moving = this.state === 'patrol' || this.state === 'charge';
-      const sp = this.state === 'charge' ? 22 : 7;
-      const ph = moving ? this.anim * sp : 0;
-      const rear = this.state === 'windup' ? Math.min(1, this.t / 0.5) : 0;
-      c.rotate(-0.22 * rear + (this.state === 'charge' ? 0.08 : 0));
-      c.lineCap = 'round';
-      const legCol = flash ? '#fff' : '#2a140f';
-      for (const [bx, off] of [[-22, 0], [16, Math.PI]]) {
-        for (const near of [false, true]) {
-          const q = ph + off + (near ? Math.PI * 0.5 : 0);
-          c.strokeStyle = near ? legCol : flash ? '#fff' : '#170a07';
-          c.lineWidth = near ? 8 : 7;
-          const kx = bx + Math.sin(q) * 7, ky = -18 - Math.max(0, Math.cos(q)) * 6;
-          c.beginPath();
-          c.moveTo(bx, -30);
-          c.lineTo(kx, ky);
-          c.lineTo(kx + 4 + Math.sin(q) * 4, -1);
-          c.stroke();
-        }
-      }
-      const bg = c.createLinearGradient(0, -62, 0, -18);
-      bg.addColorStop(0, flash ? '#fff' : '#8a3b2a');
-      bg.addColorStop(0.6, flash ? '#fff' : '#4a1a12');
-      bg.addColorStop(1, flash ? '#fff' : '#1f0906');
-      c.fillStyle = bg;
-      c.beginPath();
-      c.moveTo(-38, -26);
-      c.quadraticCurveTo(-36, -58, -6, -60);
-      c.quadraticCurveTo(22, -62, 30, -40);
-      c.quadraticCurveTo(34, -24, 18, -22);
-      c.lineTo(-30, -20);
-      c.closePath();
-      c.fill();
-      if (!flash) {
-        c.strokeStyle = 'rgba(0,0,0,0.6)';
-        c.lineWidth = 1;
-        c.stroke();
-        // bristled green-black plumage down the spine, like the trailer's lizard
-        for (let k = 0; k < 11; k++) {
-          const t = k / 10;
-          const x0 = lerp(-34, 20, t), y0 = -54 + Math.sin(t * Math.PI) * -6;
-          c.strokeStyle = k % 2 ? '#123a1a' : '#1f5a28';
-          c.lineWidth = 3;
-          c.beginPath();
-          c.moveTo(x0, y0 + 6);
-          c.lineTo(x0 - 6, y0 - 8 - Math.sin(this.anim * 3 + k) * 1.5);
-          c.stroke();
-        }
-      }
-      c.save();
-      c.translate(30, -34 - rear * 10);
-      c.rotate(0.2 - rear * 0.5);
-      const hg = c.createLinearGradient(0, -12, 0, 10);
-      hg.addColorStop(0, flash ? '#fff' : '#d9c7a4');
-      hg.addColorStop(1, flash ? '#fff' : '#6a5a44');
-      c.fillStyle = hg;
-      c.beginPath();
-      c.moveTo(-6, -10);
-      c.quadraticCurveTo(14, -14, 22, -2);
-      c.lineTo(20, 6);
-      c.quadraticCurveTo(6, 10, -6, 6);
-      c.closePath();
-      c.fill();
-      if (!flash) {
-        c.strokeStyle = 'rgba(0,0,0,0.65)';
-        c.lineWidth = 1;
-        c.stroke();
-        c.fillStyle = '#140806';
-        c.beginPath(); c.ellipse(6, -3, 4, 3, 0, 0, TAU); c.fill();
-        c.fillStyle = this.counterable ? '#fffbe0' : '#ffd23a';
-        c.beginPath(); c.arc(7, -3, 1.8, 0, TAU); c.fill();
-        c.strokeStyle = '#efe4cc';
-        c.lineWidth = 1.5;
-        for (let k = 0; k < 4; k++) { c.beginPath(); c.moveTo(8 + k * 3.5, 6); c.lineTo(9 + k * 3.5, 10 + (this.state === 'charge' ? 2 : 0)); c.stroke(); }
-      }
-      c.restore();
-      c.restore();
-    };
-    c.save();
-    this.devourTint(c);
-    drawBody(false);
-    this.hitFlash(c, drawBody);
-    c.restore();
-    c.save();
-    c.globalCompositeOperation = 'lighter';
-    c.fillStyle = 'rgba(255,200,60,0.3)';
-    c.beginPath(); c.arc(this.cx + this.facing * 38, this.y + this.h - 37, 10, 0, TAU); c.fill();
-    c.restore();
+    drawCreature(c, this, paintBrute);
   }
 }
 
@@ -623,53 +408,7 @@ export class Jelly extends Enemy {
   }
 
   draw(c) {
-    const ox = this.offsetShake();
-    const t = this.anim;
-    const pulse = 0.5 + 0.5 * Math.sin(t * 2.6);
-    const drawBody = (flash) => {
-      c.save();
-      c.translate(this.cx + ox, this.cy);
-      const squash = 1 + 0.12 * Math.sin(t * 5.2);
-      c.scale(1 / squash, squash);
-      const bell = c.createRadialGradient(0, -6, 2, 0, 0, 24);
-      bell.addColorStop(0, flash ? 'rgba(255,255,255,0.95)' : 'rgba(230,200,255,0.75)');
-      bell.addColorStop(0.6, flash ? 'rgba(255,255,255,0.8)' : 'rgba(160,110,230,0.45)');
-      bell.addColorStop(1, 'rgba(90,60,180,0.1)');
-      c.fillStyle = bell;
-      c.beginPath();
-      c.moveTo(-20, 4);
-      c.bezierCurveTo(-22, -22, 22, -22, 20, 4);
-      for (let k = 0; k <= 6; k++) c.lineTo(20 - (k * 40) / 6, 4 + (k % 2 ? 4 : 0));
-      c.closePath();
-      c.fill();
-      if (!flash) {
-        c.strokeStyle = 'rgba(240,225,255,0.55)';
-        c.lineWidth = 1;
-        c.stroke();
-        c.strokeStyle = `rgba(200,170,255,${0.35 + 0.25 * pulse})`;
-        c.lineCap = 'round';
-        for (let k = 0; k < 5; k++) {
-          const x0 = -14 + k * 7;
-          c.beginPath();
-          c.moveTo(x0, 6);
-          c.quadraticCurveTo(x0 + Math.sin(t * 3 + k) * 6, 20, x0 + Math.sin(t * 2 + k * 2) * 4, 32 + k % 2 * 4);
-          c.stroke();
-        }
-        c.fillStyle = this.counterable ? 'rgba(255,255,230,0.95)' : `rgba(255,150,240,${0.6 + 0.4 * pulse})`;
-        c.beginPath(); c.arc(0, -6, 4.5, 0, TAU); c.fill();
-      }
-      c.restore();
-    };
-    c.save();
-    this.devourTint(c);
-    drawBody(false);
-    this.hitFlash(c, drawBody);
-    c.restore();
-    c.save();
-    c.globalCompositeOperation = 'lighter';
-    c.fillStyle = `rgba(190,140,255,${0.18 + 0.12 * pulse})`;
-    c.beginPath(); c.arc(this.cx, this.cy - 4, 34, 0, TAU); c.fill();
-    c.restore();
+    drawCreature(c, this, paintJelly);
   }
 }
 
@@ -705,46 +444,7 @@ export class Spitter extends Enemy {
   }
 
   draw(c) {
-    const ox = this.offsetShake();
-    const sw = this.state === 'swell' ? Math.min(1, this.t / 0.6) : 0;
-    const drawBody = (flash) => {
-      c.save();
-      c.translate(this.cx + ox, this.y + this.h);
-      c.scale(this.facing, 1);
-      const g2 = c.createLinearGradient(0, -44, 0, 0);
-      g2.addColorStop(0, flash ? '#fff' : '#3a1a14');
-      g2.addColorStop(1, flash ? '#fff' : '#0e0604');
-      c.fillStyle = g2;
-      c.beginPath();
-      c.moveTo(-20, 0);
-      c.quadraticCurveTo(-24, -30, -4, -40 - sw * 6);
-      c.quadraticCurveTo(16, -44 - sw * 4, 20, -24);
-      c.quadraticCurveTo(22, -8, 20, 0);
-      c.closePath();
-      c.fill();
-      if (!flash) {
-        c.strokeStyle = 'rgba(255,120,40,0.55)';
-        c.lineWidth = 1.2;
-        for (let k = 0; k < 4; k++) {
-          c.beginPath();
-          c.moveTo(-14 + k * 8, -4);
-          c.lineTo(-10 + k * 7 + Math.sin(k) * 3, -20 - k * 3);
-          c.stroke();
-        }
-        const mouth = c.createRadialGradient(8, -36 - sw * 5, 0, 8, -36 - sw * 5, 10 + sw * 6);
-        mouth.addColorStop(0, `rgba(255,240,180,${0.6 + 0.4 * sw})`);
-        mouth.addColorStop(0.5, `rgba(255,120,30,${0.5 + 0.4 * sw})`);
-        mouth.addColorStop(1, 'rgba(255,60,0,0)');
-        c.fillStyle = mouth;
-        c.beginPath(); c.arc(8, -36 - sw * 5, 10 + sw * 6, 0, TAU); c.fill();
-      }
-      c.restore();
-    };
-    c.save();
-    this.devourTint(c);
-    drawBody(false);
-    this.hitFlash(c, drawBody);
-    c.restore();
+    drawCreature(c, this, paintSpitter);
   }
 }
 
@@ -812,46 +512,7 @@ export class Drone extends Enemy {
   }
 
   draw(c) {
-    const ox = this.offsetShake();
-    const drawBody = (flash) => {
-      c.save();
-      c.translate(this.cx + ox, this.cy);
-      c.rotate(this.state === 'stunned' ? 0.6 : Math.sin(this.anim * 3) * 0.06);
-      c.fillStyle = flash ? '#fff' : '#2a2340';
-      c.beginPath();
-      c.moveTo(-18, -4); c.lineTo(-10, -12); c.lineTo(10, -12); c.lineTo(18, -4); c.lineTo(12, 8); c.lineTo(-12, 8);
-      c.closePath();
-      c.fill();
-      if (!flash) {
-        c.strokeStyle = 'rgba(170,150,255,0.55)';
-        c.lineWidth = 1;
-        c.stroke();
-        c.fillStyle = '#120e20';
-        c.fillRect(-22, -2, 6, 3);
-        c.fillRect(16, -2, 6, 3);
-        const eye = this.state === 'aim' || this.counterable;
-        c.fillStyle = this.counterable ? '#fffbe0' : eye ? '#ff4a6a' : '#7fd0ff';
-        c.beginPath(); c.arc(this.facing * 4, -2, 3.4, 0, TAU); c.fill();
-        c.globalCompositeOperation = 'lighter';
-        c.fillStyle = 'rgba(120,180,255,0.5)';
-        c.beginPath(); c.ellipse(0, 12, 9, 3 + Math.sin(this.anim * 30), 0, 0, TAU); c.fill();
-      }
-      c.restore();
-    };
-    c.save();
-    this.devourTint(c);
-    drawBody(false);
-    this.hitFlash(c, drawBody);
-    c.restore();
-    if (this.state === 'aim') {
-      c.save();
-      c.globalCompositeOperation = 'lighter';
-      c.strokeStyle = `rgba(255,70,110,${0.2 + 0.5 * (this.t / 0.7)})`;
-      c.lineWidth = 1;
-      c.setLineDash([6, 6]);
-      c.beginPath(); c.moveTo(this.cx, this.cy); c.lineTo(this.aimX, this.aimY); c.stroke();
-      c.restore();
-    }
+    drawCreature(c, this, paintDrone);
   }
 }
 
