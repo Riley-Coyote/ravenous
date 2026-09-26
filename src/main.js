@@ -74,6 +74,14 @@ const unlockAudio = () => {
   audioInit();
 };
 for (const ev of ['keydown', 'pointerdown', 'touchend', 'mousedown']) addEventListener(ev, unlockAudio, { passive: true });
+
+// losing focus mid-fight pauses the game instead of letting Samus stand there taking hits
+addEventListener('blur', () => {
+  if (g.state === 'play' && !g.intro && !g.paused && g.input.lastDevice !== 'touch') {
+    g.paused = true;
+    setCharge(0);
+  }
+});
 g.audioParts = audioParts;
 setTimeout(() => { g.music = music; }, 0);
 
@@ -1714,6 +1722,26 @@ function render() {
 
 function drawOverlays() {
   if (g.touch && g.touch.active && innerHeight > innerWidth) drawRotate(ctx);
+  // keys go wherever the focus is; say so when it isn't on the game
+  if (!document.hasFocus() && g.input.lastDevice !== 'touch' && g.input.lastDevice !== 'pad') {
+    ctx.save();
+    ctx.font = '500 13px "Inter", system-ui, sans-serif';
+    const txt = 'Click the game to use the keyboard';
+    const w = ctx.measureText(txt).width + 44;
+    const x = 380, y = 30;
+    ctx.fillStyle = 'rgba(12,12,16,0.88)';
+    ctx.beginPath();
+    ctx.roundRect ? ctx.roundRect(x, y, w, 32, 8) : ctx.rect(x, y, w, 32);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255,62,180,0.95)';
+    ctx.beginPath(); ctx.arc(x + 18, y + 16, 3, 0, TAU); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.fillText(txt, x + 30, y + 21);
+    ctx.restore();
+  }
 }
 
 function drawRoomBack(r) {
