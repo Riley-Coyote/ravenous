@@ -57,19 +57,23 @@ export function layerOrigin(room, f, camX, camY) {
 
 export function paintRoom(world, room, nz) {
   const out = { layers: [], terrain: null, glow: null, fg: null, surfaces: [] };
-  const far = paintFar(room, nz, 0.28);
+  const far = blurCanvas(paintFar(room, nz, 0.28), 1);
   out.layers.push({ canvas: far, f: 0.28, s: S });
   const mid = paintMid(room, nz, 0.58);
   out.layers.push({ canvas: mid, f: 0.58, s: S });
   const t = paintTerrain(world, room, nz);
   out.terrain = t.canvas;
+  out.normal = t.normal;
   out.glow = t.glow;
   out.surfaces = t.surfaces;
-  out.fg = { canvas: paintForeground(room, nz, 1.18), f: 1.18, s: S };
+  out.lights = staticLights(world, room);
+  out.fg = { canvas: blurCanvas(paintForeground(room, nz, 1.18), 2), f: 1.18, s: S };
   return out;
 }
 
 // ---------------------------------------------------------------- terrain
+
+export const MATERIAL = { sand: 1, ruin: 2, ice: 3, magma: 4, hive: 5, lab: 6, arena: 7 };
 
 function paintTerrain(world, room, nz) {
   const W = room.pw / S, H = room.ph / S, cpt = TILE / S;
@@ -107,18 +111,89 @@ function paintTerrain(world, room, nz) {
   boxBlur(depth, W, H, 9, 2);
   const near = alpha.slice();
   boxBlur(near, W, H, 2, 1);
+  const mid = alpha.slice();
+  boxBlur(mid, W, H, 5, 1);
+
+  // material value per cell: the pattern each kind of rock is made of
+  const theme = room.theme;
+  const kArr = new Float32Array(W * H);
+  const emArr = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      if (alpha[i] < 0.004) continue;
+      const wx = ox + x, wy = oy + y;
+      const d = depth[i];
+      const tex = nz.fbm(wx * 0.05 + 40, wy * 0.05 - 20, 3);
+      const grain = nz.noise(wx * 0.45, wy * 0.45);
+      const fine = nz.noise(wx * 0.9 + 13, wy * 0.9 - 7);
+      let k;
+      let em = 0;
+      if (theme === 'sand') {
+        const warp = nz.fbm(wx * 0.012, wy * 0.012, 2) * 14;
+        const strata = 0.5 + 0.5 * Math.sin(wy * 0.23 + tex * 7.5 + warp);
+        const band = 0.5 + 0.5 * Math.sin(wy * 0.061 + warp * 0.4);
+        const pebble = fine > 0.84 ? (fine - 0.84) * 3 : 0;
+        k = tex * 0.7 + strata * 0.22 + band * 0.12 + (grain - 0.5) * 0.22 + pebble;
+      } else if (theme === 'ice') {
+        const facet = Math.abs(nz.noise(wx * 0.045 + 3, wy * 0.045) * 2 - 1);
+        const streak = 0.5 + 0.5 * Math.sin(wx * 0.09 + tex * 5);
+        const bubble = fine > 0.9 ? 0.35 : 0;
+        k = 0.25 + tex * 0.42 + (1 - facet) * 0.3 + streak * 0.08 + (grain > 0.93 ? 0.4 : 0) + bubble;
+      } else if (theme === 'magma') {
+        const cell = Math.abs(nz.noise(wx * 0.11, wy * 0.11) * 2 - 1);
+        k = 0.18 + tex * 0.45 + (grain - 0.5) * 0.25 + (1 - cell) * 0.12;
+        const v = Math.abs(nz.noise(wx * 0.05 + 9, wy * 0.05 - 4) - 0.5);
+        const v2 = Math.abs(nz.noise(wx * 0.12 - 3, wy * 0.12 + 8) - 0.5);
+        em = (smoothstep(0.035, 0.0, v) + smoothstep(0.018, 0.0, v2) * 0.55) * smoothstep(0.95, 0.6, d);
+      } else if (theme === 'hive') {
+        const cell = smoothstep(0.45, 0.75, nz.noise(wx * 0.07, wy * 0.07 + 20));
+        const vein = smoothstep(0.03, 0.0, Math.abs(nz.noise(wx * 0.03 + 40, wy * 0.03) - 0.5));
+        const moss = smoothstep(0.55, 0.8, nz.fbm(wx * 0.02 + 5, wy * 0.02, 3));
+        k = 0.2 + tex * 0.42 + cell * 0.3 - vein * 0.25 + moss * 0.15;
+        em = smoothstep(0.012, 0.0, Math.abs(nz.noise(wx * 0.021 + 70, wy * 0.021) - 0.5)) * 0.35 * smoothstep(0.9, 0.55, d);
+      } else if (theme === 'lab') {
+        const pw = 40, ph = 20;
+        const bx = ((wx % pw) + pw) % pw, by = ((wy % ph) + ph) % ph;
+        const seam = bx < 1.2 || by < 1.2 ? 1 : 0;
+        const rivet = (Math.abs(bx - 4) < 1.2 && Math.abs(by - 4) < 1.2) || (Math.abs(bx - pw + 4) < 1.2 && Math.abs(by - 4) < 1.2) ? 1 : 0;
+        const panel = nz.noise(Math.floor(wx / pw) * 1.7, Math.floor(wy / ph) * 2.3);
+        const grime = smoothstep(0.5, 0.85, nz.fbm(wx * 0.03, wy * 0.06 - 9, 3));
+        const scratch = Math.abs(Math.sin(wx * 0.9 + wy * 0.13 + panel * 30)) > 0.995 ? 0.25 : 0;
+        k = 0.3 + panel * 0.3 + tex * 0.18 - seam * 0.3 + rivet * 0.5 - grime * 0.18 + scratch;
+      } else {
+        // dressed stone: blocks with mortar, chipped by noise
+        const rowH = theme === 'arena' ? 22 : 15;
+        const bw = theme === 'arena' ? 46 : 32;
+        const row = Math.floor(wy / rowH);
+        const bx = (wx + (row % 2) * bw * 0.5) % bw;
+        const by = wy % rowH;
+        const mortar = (by < 1.3 || bx < 1.3) ? 1 : 0;
+        const chip = nz.noise(wx * 0.3 + 7, wy * 0.3) > 0.72 ? 1 : 0;
+        const stain = smoothstep(0.6, 0.9, nz.fbm(wx * 0.05, wy * 0.012, 2)) * 0.2;
+        k = 0.35 + tex * 0.55 + (grain - 0.5) * 0.14 - mortar * 0.34 * (1 - chip) + (nz.noise(row * 3.1, Math.floor((wx + (row % 2) * bw * 0.5) / bw) * 1.7) - 0.5) * 0.25 - stain;
+        if (theme === 'arena') em = mortar * smoothstep(0.7, 0.9, nz.noise(wx * 0.02, wy * 0.02)) * 0.5 * smoothstep(0.9, 0.6, d);
+      }
+      kArr[i] = clamp(k, 0, 1);
+      emArr[i] = em;
+    }
+  }
 
   const canvas = makeCanvas(W, H);
   const c = canvas.getContext('2d');
   const img = c.createImageData(W, H);
   const px = img.data;
-  const theme = room.theme;
+  const ncanvas = makeCanvas(W, H);
+  const nc = ncanvas.getContext('2d');
+  const nimg = nc.createImageData(W, H);
+  const npx = nimg.data;
+  const matB = ((MATERIAL[theme] || 1) + 0.5) / 8 * 255;
+  const H_at = (i) => depth[i] * 0.55 + mid[i] * 0.3 + near[i] * 0.15 + (kArr[i] - 0.5) * 0.045;
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const i = y * W + x;
       const a = alpha[i];
       if (a < 0.004) continue;
-      const wx = ox + x, wy = oy + y;
       const d = depth[i];
       const up = y > 2 ? near[i - 2 * W] : 1;
       const dn = y < H - 3 ? near[i + 2 * W] : 1;
@@ -133,68 +208,47 @@ function paintTerrain(world, room, nz) {
       const wallL = clamp(Math.abs(nxB) * 2.2, 0, 1) * (nxB > 0 ? 1 : 0.7);
       const light = clamp(0.1 + floorL * 0.95 + wallL * 0.4 - ceilL * 0.08, 0.04, 1.05);
       const dark = smoothstep(0.55 + floorL * 0.1, 0.9 + floorL * 0.06, d);
-      const bottom = ceilL;
-      const tex = nz.fbm(wx * 0.05 + 40, wy * 0.05 - 20, 3);
-      const grain = nz.noise(wx * 0.45, wy * 0.45);
-      let k;
-      let em = 0;
-      if (theme === 'sand') {
-        const strata = 0.5 + 0.5 * Math.sin(wy * 0.23 + tex * 7.5);
-        k = tex * 0.8 + strata * 0.28 + (grain - 0.5) * 0.2;
-      } else if (theme === 'ice') {
-        const facet = Math.abs(nz.noise(wx * 0.045 + 3, wy * 0.045) * 2 - 1);
-        const streak = 0.5 + 0.5 * Math.sin(wx * 0.09 + tex * 5);
-        k = 0.25 + tex * 0.45 + (1 - facet) * 0.3 + streak * 0.08 + (grain > 0.93 ? 0.4 : 0);
-      } else if (theme === 'magma') {
-        k = 0.2 + tex * 0.5 + (grain - 0.5) * 0.25;
-        const v = Math.abs(nz.noise(wx * 0.05 + 9, wy * 0.05 - 4) - 0.5);
-        em = smoothstep(0.035, 0.0, v) * smoothstep(0.95, 0.6, d);
-      } else if (theme === 'hive') {
-        const cell = smoothstep(0.45, 0.75, nz.noise(wx * 0.07, wy * 0.07 + 20));
-        const vein = smoothstep(0.03, 0.0, Math.abs(nz.noise(wx * 0.03 + 40, wy * 0.03) - 0.5));
-        k = 0.2 + tex * 0.45 + cell * 0.3 - vein * 0.25;
-      } else if (theme === 'lab') {
-        const pw = 40, ph = 20;
-        const bx = wx % pw, by = wy % ph;
-        const seam = bx < 1.2 || by < 1.2 ? 1 : 0;
-        const rivet = (Math.abs(bx - 4) < 1.2 && Math.abs(by - 4) < 1.2) || (Math.abs(bx - pw + 4) < 1.2 && Math.abs(by - 4) < 1.2) ? 1 : 0;
-        const panel = nz.noise(Math.floor(wx / pw) * 1.7, Math.floor(wy / ph) * 2.3);
-        k = 0.3 + panel * 0.3 + tex * 0.2 - seam * 0.3 + rivet * 0.5;
-      } else {
-        // dressed stone: blocks with mortar, chipped by noise
-        const rowH = theme === 'arena' ? 22 : 15;
-        const bw = theme === 'arena' ? 46 : 32;
-        const row = Math.floor(wy / rowH);
-        const bx = (wx + (row % 2) * bw * 0.5) % bw;
-        const by = wy % rowH;
-        const mortar = (by < 1.3 || bx < 1.3) ? 1 : 0;
-        const chip = nz.noise(wx * 0.3 + 7, wy * 0.3) > 0.72 ? 1 : 0;
-        k = 0.35 + tex * 0.55 + (grain - 0.5) * 0.14 - mortar * 0.34 * (1 - chip) + (nz.noise(row * 3.1, Math.floor((wx + (row % 2) * bw * 0.5) / bw) * 1.7) - 0.5) * 0.25;
-      }
-      k = clamp(k, 0, 1);
-      let R = lerp(pal.rock[0], pal.rockHi[0], k) * light;
-      let G = lerp(pal.rock[1], pal.rockHi[1], k) * light;
-      let B = lerp(pal.rock[2], pal.rockHi[2], k) * light;
-      // a thin lip of light on anything you can stand on
+      // crevices hold shadow: where the rock closes in around a surface
+      const ao = 1 - smoothstep(0.62, 0.9, mid[i]) * (1 - top) * 0.3;
+      const k = kArr[i];
+      const hue = nz.fbm((ox + x) * 0.006 + 90, (oy + y) * 0.006, 2) - 0.5;
+      let R = lerp(pal.rock[0], pal.rockHi[0], k) * light * ao * (1 + hue * 0.25);
+      let G = lerp(pal.rock[1], pal.rockHi[1], k) * light * ao;
+      let B = lerp(pal.rock[2], pal.rockHi[2], k) * light * ao * (1 - hue * 0.25);
       R = lerp(R, pal.rim[0], top * 0.55 * (0.4 + 0.6 * floorL));
       G = lerp(G, pal.rim[1], top * 0.55 * (0.4 + 0.6 * floorL));
       B = lerp(B, pal.rim[2], top * 0.55 * (0.4 + 0.6 * floorL));
-      R = lerp(R, pal.ceil[0], bottom * 0.3);
-      G = lerp(G, pal.ceil[1], bottom * 0.3);
-      B = lerp(B, pal.ceil[2], bottom * 0.3);
+      R = lerp(R, pal.ceil[0], ceilL * 0.3);
+      G = lerp(G, pal.ceil[1], ceilL * 0.3);
+      B = lerp(B, pal.ceil[2], ceilL * 0.3);
       R = lerp(R, pal.deep[0], dark);
       G = lerp(G, pal.deep[1], dark);
       B = lerp(B, pal.deep[2], dark);
+      const em = emArr[i];
       if (em > 0) {
-        R = lerp(R, 255, em * 0.9);
-        G = lerp(G, 120, em * 0.8);
-        B = lerp(B, 40, em * 0.7);
+        const ec = theme === 'hive' ? [170, 255, 140] : theme === 'arena' ? [130, 170, 255] : [255, 120, 40];
+        R = lerp(R, ec[0], Math.min(1, em * 0.9));
+        G = lerp(G, ec[1], Math.min(1, em * 0.8));
+        B = lerp(B, ec[2], Math.min(1, em * 0.7));
       }
       const o = i * 4;
       px[o] = R; px[o + 1] = G; px[o + 2] = B; px[o + 3] = a * 255;
+      // which way this bit of rock faces, for the lights
+      const xl = x > 0 ? i - 1 : i, xr = x < W - 1 ? i + 1 : i;
+      const yu = y > 0 ? i - W : i, yd = y < H - 1 ? i + W : i;
+      let nx = -(H_at(xr) - H_at(xl)) * 7.5;
+      let nyy = -(H_at(yd) - H_at(yu)) * 7.5;
+      const inv = 1 / Math.sqrt(nx * nx + nyy * nyy + 1);
+      nx *= inv;
+      nyy *= inv;
+      npx[o] = (nx * 0.5 + 0.5) * 255;
+      npx[o + 1] = (nyy * 0.5 + 0.5) * 255;
+      npx[o + 2] = matB;
+      npx[o + 3] = a * 255;
     }
   }
   c.putImageData(img, 0, 0);
+  nc.putImageData(nimg, 0, 0);
 
   // Walkable surfaces, for grass, dust and glowing cracks.
   const surfaces = [];
@@ -205,7 +259,7 @@ function paintTerrain(world, room, nz) {
     }
   }
   const rng = mulberry32(room.tx * 131 + room.ty * 7 + 3);
-  // One-way ledges become stone slabs.
+  // One-way ledges become slabs, in color and in the normal map.
   for (let ty = 0; ty < room.h; ty++) {
     for (let tx = 0; tx < room.w; tx++) {
       if (world.tile(room.tx + tx, room.ty + ty) !== T.ONEWAY) continue;
@@ -213,6 +267,13 @@ function paintTerrain(world, room, nz) {
       const leftEnd = world.tile(room.tx + tx - 1, room.ty + ty) !== T.ONEWAY;
       const rightEnd = world.tile(room.tx + tx + 1, room.ty + ty) !== T.ONEWAY;
       drawLedge(c, x0, y0, cpt, leftEnd, rightEnd, pal, rng, theme);
+      const hgt = cpt * 0.62;
+      const ng = nc.createLinearGradient(0, y0, 0, y0 + hgt);
+      ng.addColorStop(0, `rgb(128,20,${matB | 0})`);
+      ng.addColorStop(0.25, `rgb(128,110,${matB | 0})`);
+      ng.addColorStop(1, `rgb(128,235,${matB | 0})`);
+      nc.fillStyle = ng;
+      nc.fillRect(x0 + (leftEnd ? 3 : 0), y0, cpt - (leftEnd ? 3 : 0) - (rightEnd ? 3 : 0), hgt * 0.85);
     }
   }
   // Grass, frost, moss and grit on the floors.
@@ -231,11 +292,19 @@ function paintTerrain(world, room, nz) {
       c.stroke();
     }
   }
+  // frost crust on the ice floors
+  if (theme === 'ice') {
+    for (const s of surfaces) {
+      if (rng() > 0.5) continue;
+      c.fillStyle = `rgba(235,250,255,${0.25 + rng() * 0.4})`;
+      c.fillRect(s.x, s.y, 1, 1 + rng() * 1.5);
+    }
+  }
   let glow = null;
   if (theme === 'arena') glow = paintCracks(W, H, surfaces, alpha, rng);
   if (theme === 'magma') glow = paintCracks(W, H, surfaces, alpha, rng, [255, 120, 40], 0.05);
   if (theme === 'lab') glow = paintStrips(W, H, surfaces, rng);
-  return { canvas, glow, surfaces };
+  return { canvas, glow, surfaces, normal: ncanvas };
 }
 
 function drawLedge(c, x0, y0, cpt, leftEnd, rightEnd, pal, rng, theme) {
@@ -1205,4 +1274,86 @@ export function drawVent(c, x, y, t, heat) {
     c.fill();
   }
   c.restore();
+}
+
+// ---------------------------------------------------------------- lens and light helpers
+
+// soft focus for layers far from the action (premultiplied so edges don't darken)
+export function blurCanvas(src, r) {
+  if (r <= 0) return src;
+  const w = src.width, h = src.height;
+  const img = src.getContext('2d').getImageData(0, 0, w, h);
+  const d = img.data;
+  const n = w * h;
+  const R = new Float32Array(n), G = new Float32Array(n), B = new Float32Array(n), A = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = d[i * 4 + 3] / 255;
+    R[i] = d[i * 4] * a; G[i] = d[i * 4 + 1] * a; B[i] = d[i * 4 + 2] * a; A[i] = a;
+  }
+  for (const ch of [R, G, B, A]) boxBlur(ch, w, h, r, 2);
+  for (let i = 0; i < n; i++) {
+    const a = A[i];
+    const k = a > 0.0001 ? 1 / a : 0;
+    d[i * 4] = R[i] * k; d[i * 4 + 1] = G[i] * k; d[i * 4 + 2] = B[i] * k; d[i * 4 + 3] = a * 255;
+  }
+  const out = makeCanvas(w, h);
+  out.getContext('2d').putImageData(img, 0, 0);
+  return out;
+}
+
+// lights that belong to each room: sky, lava, canopy, strip lights, torches
+export function staticLights(world, room) {
+  const L = [];
+  const add = (x, y, r, col, a, z) => L.push({ x, y, r, col, a, z });
+  const X = (u) => room.x + room.pw * u, Y = (v) => room.y + room.ph * v;
+  switch (room.id) {
+    case 'A':
+      add(room.x + 640, room.y - 60, 1300, [1, 0.86, 0.66], 0.55, 520);
+      add(room.x + 640, room.y + room.ph - 90, 620, [1, 0.78, 0.55], 0.16, 220);
+      break;
+    case 'B':
+      for (const [u, v] of [[0.18, 0.35], [0.62, 0.25], [0.9, 0.55]]) add(X(u), Y(v), 520, [1, 0.8, 0.6], 0.22, 260);
+      break;
+    case 'C':
+      add(X(0.5), Y(0.42), 900, [0.8, 0.88, 1], 0.26, 360);
+      add(X(0.5), room.y - 20, 820, [0.85, 0.9, 1], 0.25, 420);
+      break;
+    case 'E':
+      add(X(0.3), Y(0.25), 720, [0.6, 0.85, 1], 0.34, 320);
+      add(X(0.78), Y(0.35), 640, [0.6, 0.85, 1], 0.3, 320);
+      break;
+    case 'F': {
+      // every lava pool lights the rock around it from below
+      for (let tx = room.tx; tx < room.tx + room.w; tx++) {
+        for (let ty = room.ty; ty < room.ty + room.h; ty++) {
+          if (world.tile(tx, ty) === T.LAVA && world.tile(tx, ty - 1) !== T.LAVA && world.tile(tx - 1, ty) !== T.LAVA) {
+            // one light per pool, centred on it
+            let w = 0;
+            while (world.tile(tx + w, ty) === T.LAVA) w++;
+            add(tx * TILE + (w * TILE) / 2, ty * TILE - 10, 170 + w * 40, [1, 0.42, 0.1], 0.6, 34);
+          }
+        }
+      }
+      add(X(0.5), Y(1.05), 1200, [1, 0.4, 0.12], 0.18, 200);
+      break;
+    }
+    case 'G':
+      add(X(0.45), room.y - 40, 1150, [0.82, 1, 0.72], 0.36, 460);
+      for (let tx = room.tx; tx < room.tx + room.w; tx++) {
+        for (let ty = room.ty; ty < room.ty + room.h; ty++) {
+          if (world.tile(tx, ty) === T.WATER && world.tile(tx, ty - 1) !== T.WATER && (tx - room.tx) % 3 === 0) add(tx * TILE + 20, ty * TILE, 220, [0.4, 1, 0.8], 0.3, 20);
+        }
+      }
+      break;
+    case 'H':
+      for (const u of [0.2, 0.5, 0.8]) add(X(u), room.y + 110, 520, [0.62, 0.56, 1], 0.3, 220);
+      add(X(0.62), Y(0.42), 620, [0.55, 0.85, 1], 0.24, 300);
+      break;
+    case 'I':
+      add(X(0.08), Y(0.22), 620, [1, 0.6, 0.3], 0.5, 260);
+      add(X(0.92), Y(0.22), 620, [1, 0.6, 0.3], 0.5, 260);
+      add(X(0.5), Y(0.45), 760, [0.62, 0.5, 1], 0.26, 340);
+      break;
+  }
+  return L;
 }

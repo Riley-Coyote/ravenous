@@ -1,7 +1,7 @@
 // RAVENOUS: a fan demo for Liam, made after watching the Metroid Ravenous reveal trailer.
 // Loop, camera, combat rules, rooms, items, hazards, story beats, menus.
 
-import { clamp, lerp, rand, TAU, overlap, makeNoise2D, sign, approach } from './util.js';
+import { clamp, lerp, rand, TAU, overlap, makeNoise2D, sign, approach, easeInOutCubic } from './util.js';
 import { Input } from './input.js';
 import { audioInit, sfx as playSfx, setAmbient, setBossMusic, musicTick, toggleMute, setCharge, audioParts } from './audio.js';
 import { World, TILE, T } from './level.js';
@@ -15,24 +15,49 @@ import { HUD, drawTitle, drawPause, drawEnd, drawDeath, drawRotate, titleLayout 
 import { Touch } from './touch.js';
 import { Cinematic } from './cinematic.js';
 import { music } from './music.js';
+import { Post } from './post.js';
+import { makeDetailTexture, makeNoiseTexture } from './textures.js';
+import { LOOKS, MAT_ARR, MATW_ARR, makeLookState, easeLook, packLights, screenOf } from './look.js';
 
-
-const canvas = document.getElementById('game');
-const ctx = canvas.getContext('2d');
+const canvas = document.getElementById('game');        // the finished picture
+const uiCanvas = document.getElementById('ui');        // sharp text and controls on top
+const uctx = uiCanvas.getContext('2d');
+const sceneCanvas = document.createElement('canvas');   // the world, painted in 2D, then lit
+const ctx = sceneCanvas.getContext('2d');
+const normCanvas = document.createElement('canvas');    // which way every surface faces
+const nctx = normCanvas.getContext('2d');
 const params = new URLSearchParams(location.search);
-let scale = 1;
-// canvas resolution; steps down on its own if a device can't keep up
-let resScale = Math.min(2, window.devicePixelRatio || 1);
+const post = new Post(canvas);
+const glOK = !params.has('flat') && post.init();
+const dctx = glOK ? null : canvas.getContext('2d');
+const coarse = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
+// scene resolution; steps down on its own if a device can't keep up
+let resScale = coarse ? 1 : Math.min(1.5, window.devicePixelRatio || 1);
 const perf = { acc: 0, n: 0, slow: 0 };
+const view = { rs: 1, ui: 1 };
 
 function resize() {
   const s = Math.min(innerWidth / VIEW_W, innerHeight / VIEW_H);
-  const dpr = resScale;
-  canvas.style.width = `${Math.round(VIEW_W * s)}px`;
-  canvas.style.height = `${Math.round(VIEW_H * s)}px`;
-  canvas.width = Math.round(VIEW_W * s * dpr);
-  canvas.height = Math.round(VIEW_H * s * dpr);
-  scale = canvas.width / VIEW_W;
+  const cssW = Math.max(1, Math.round(VIEW_W * s)), cssH = Math.max(1, Math.round(VIEW_H * s));
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  for (const c of [canvas, uiCanvas]) {
+    c.style.width = `${cssW}px`;
+    c.style.height = `${cssH}px`;
+  }
+  const outW = Math.round(cssW * dpr), outH = Math.round(cssH * dpr);
+  uiCanvas.width = outW;
+  uiCanvas.height = outH;
+  view.ui = outW / VIEW_W;
+  view.rs = Math.max(0.5, Math.min(resScale, outW / VIEW_W));
+  sceneCanvas.width = Math.round(VIEW_W * view.rs);
+  sceneCanvas.height = Math.round(VIEW_H * view.rs);
+  normCanvas.width = Math.round(sceneCanvas.width / 2);
+  normCanvas.height = Math.round(sceneCanvas.height / 2);
+  if (glOK) post.resize(outW, outH, sceneCanvas.width, sceneCanvas.height);
+  else {
+    canvas.width = outW;
+    canvas.height = outH;
+  }
 }
 addEventListener('resize', resize);
 resize();
@@ -63,6 +88,7 @@ const g = {
   controlLocked: false, showHud: true, paused: false, intro: null, cine: null, deathT: 0, endT: 0,
   god: params.has('god'), calm: params.has('calm'), checkpoint: null, flags: {},
   diff: DIFFS.normal, menuSel: 1, playTime: 0, touch: null, broken: [], stats: null,
+  look: makeLookState(), waves: [], ca: 0, letterbox: 0, letterT: 0, gl: glOK,
 };
 window.__R = g;
 g.hud.input = g.input;
@@ -92,6 +118,10 @@ g.shake = (amt) => { g.cam.trauma = Math.min(1, g.cam.trauma + amt); };
 g.hitstop = (s) => { g.hitstopT = Math.max(g.hitstopT, s); };
 g.slow = (scaleTo, seconds) => { g.slowScale = scaleTo; g.slowT = Math.max(g.slowT, seconds); };
 g.after = (s, fn) => g.timers.push({ t: s, fn });
+// a ring that bends the picture as it passes, a flick of lens fringing, film bars
+g.wave = (x, y, strength, speed = 800, life = 0.45) => { g.waves.push({ x, y, s: strength, v: speed, life, t: 0 }); if (g.waves.length > 4) g.waves.shift(); };
+g.kickCA = (a) => { g.ca = Math.max(g.ca, a); };
+g.bars = (seconds) => { g.letterT = Math.max(g.letterT, seconds); };
 
 g.spawnShot = (s) => { s.t = 0; g.shots.push(s); };
 
@@ -189,6 +219,8 @@ g.finishDevour = (p, t) => {
   g.cam.focus = null;
   g.flashMag = 0.5;
   g.shake(0.35);
+  g.wave(p.cx, p.cy, 11, 720, 0.55);
+  g.kickCA(0.008);
   g.sfx('devourEnd');
   g.fx.ring(p.chestPos().x, p.chestPos().y, 10, 120, 'rgba(255,90,200,A)', 0.45, 3);
   const heal = t.healAmt;
@@ -228,6 +260,9 @@ g.finishDevour = (p, t) => {
 // ---------------------------------------------------------------- story beats
 
 g.onIntroLanding = () => {
+  g.wave(g.player.cx, g.player.y + g.player.h, 12, 820, 0.7);
+  g.kickCA(0.006);
+  g.bars(2.0);
   g.sfx('bigLand');
   g.shake(0.9);
   g.fx.dust(g.player.cx, g.player.y + g.player.h, 26, 1.8);
@@ -247,6 +282,8 @@ function teachBasics() {
 }
 
 g.onBossLanded = (b) => {
+  g.wave(b.cx, b.y + b.h, 14, 900, 0.7);
+  g.kickCA(0.008);
   const quick = g.flags.brimSeen;
   g.flags.brimSeen = true;
   if (quick) {
@@ -254,6 +291,7 @@ g.onBossLanded = (b) => {
     return;
   }
   g.sfx('bossVoice');
+  g.bars(7.4);
   g.hud.say('HOLLOW BRIM', 'You fell a long way, little hunter.', 2.3, 0.2);
   g.hud.say('HOLLOW BRIM', 'Let me finish the fall.', 2.0, 0.15);
   g.hud.say('SAMUS', "I've fallen further.", 1.8, 0.2);
@@ -290,6 +328,9 @@ g.onBossDefeated = (b) => {
 function consumeBoss(b, p) {
   b.setState('consumed');
   b.stun = 0;
+  g.wave(b.cx, b.cy, 18, 700, 0.9);
+  g.kickCA(0.012);
+  g.bars(3.0);
   g.hud.clearSubs();
   g.flashMag = 0.6;
   g.flashWhite = 0.3;
@@ -387,6 +428,8 @@ function parry(p, e) {
 }
 
 function parryFx(p, x, y) {
+  g.wave(x, y, 9, 950, 0.38);
+  g.kickCA(0.007);
   g.sfx('counter');
   g.hitstop(0.11);
   g.slow(0.3, 0.32);
@@ -442,6 +485,7 @@ function breakBlock(tx, ty) {
 }
 
 function explodeBomb(b) {
+  g.wave(b.x, b.y, 4.5, 650, 0.3);
   g.sfx('bomb');
   g.shake(0.18);
   g.fx.add({ kind: 'flash', x: b.x, y: b.y, life: 0.16, size: 64, color: 'rgba(255,220,150,', add: true });
@@ -486,6 +530,8 @@ function collectItem(it) {
   g.fx.ring(it.x, it.y, 10, 260, it.kind === 'stride' ? 'rgba(160,255,200,A)' : 'rgba(140,220,255,A)', 0.9, 3);
   for (let i = 0; i < 40; i++) g.fx.add({ kind: 'dot', x: it.x, y: it.y, vx: rand(-400, 400), vy: rand(-400, 400), life: rand(0.4, 1), size: rand(1.5, 3), color: 'rgba(150,225,255,', add: true, drag: 3 });
   const dur = big ? 3.8 : 2.4;
+  g.wave(it.x, it.y, 8, 620, 0.7);
+  if (big) g.bars(dur);
   g.hud.showBanner(info.kicker, info.title, info.line, info.key, dur);
   music.duck(dur);
   g.after(dur + 0.1, () => {
@@ -558,7 +604,14 @@ async function load() {
     g.art[room.id] = paintRoom(g.world, room, nz);
   }
   g.vignette = makeVignette();
-  g.touch = new Touch(canvas, g.input);
+  if (glOK) {
+    g.loadMsg = 'weaving textures';
+    render();
+    await nextFrame();
+    post.setDetail(makeDetailTexture(512), 512);
+    post.setNoise(makeNoiseTexture(256), 256);
+  }
+  g.touch = new Touch(uiCanvas, g.input);
   g.touch.onTap = onTap;
   newGame();
   const start = params.get('room');
@@ -926,6 +979,8 @@ function startThornFight() {
   g.sfx('doorClose');
   g.player.cancelCharge();
   b.wake(g);
+  g.bars(3.2);
+  g.kickCA(0.006);
   g.sfx('bossVoice');
   g.shake(0.6);
   g.hud.clearSubs();
@@ -1091,6 +1146,7 @@ function tick(dt) {
   g.time += sdt;
   const p = g.player;
   if (p.hazardT > 0) p.hazardT -= sdt;
+  g.fx.lights.length = 0;
 
   p.update(g, sdt);
   for (const e of g.enemies) {
@@ -1137,6 +1193,11 @@ function tick(dt) {
   if (g.hurtFlash > 0) g.hurtFlash -= dt;
   if (g.flashWhite > 0) g.flashWhite -= dt * 2;
   if (g.flashMag > 0) g.flashMag -= dt * 1.6;
+  for (const w of g.waves) w.t += dt;
+  g.waves = g.waves.filter((w) => w.t < w.life);
+  g.ca = Math.max(0, g.ca - dt * 0.025);
+  if (g.letterT > 0) g.letterT -= dt;
+  g.letterbox = approach(g.letterbox, g.letterT > 0 ? 1 : 0, dt * 2.2);
   if (g.touch) {
     g.touch.signal.devour = !!devourTarget(p, 150);
     g.touch.hidden = new Set(p.hasPhase ? [] : ['dash']);
@@ -1285,6 +1346,8 @@ function hitEnemy(s, e) {
 }
 
 function explode(s, direct) {
+  g.wave(s.x, s.y, 7, 850, 0.36);
+  g.kickCA(0.003);
   g.sfx('explode');
   g.shake(0.3);
   g.fx.add({ kind: 'flash', x: s.x, y: s.y, life: 0.2, size: 80, color: 'rgba(255,200,120,', add: true });
@@ -1591,55 +1654,74 @@ function updateCamera(dt) {
 
 // ---------------------------------------------------------------- render
 
+function cameraNow() {
+  const cam = g.cam;
+  const zoom = cam.zoom * (1 + (cam.punch || 0) * 0.035);
+  let fx = VIEW_W / 2, fy = VIEW_H / 2;
+  if (cam.focus && cam.focus.alive !== false) {
+    fx = clamp((g.player.cx + cam.focus.cx) / 2 - cam.x, 200, VIEW_W - 200);
+    fy = clamp((g.player.cy + cam.focus.cy) / 2 - cam.y, 150, VIEW_H - 150);
+  }
+  const C = { x: Math.round(cam.x + cam.ox), y: Math.round(cam.y + cam.oy) };
+  const vw = { x: cam.x - 100, y: cam.y - 100, w: VIEW_W + 200, h: VIEW_H + 200 };
+  const visible = g.world.rooms.filter((r) => overlap(vw, { x: r.x, y: r.y, w: r.pw, h: r.ph }));
+  return { fx, fy, zoom, C, view: vw, visible };
+}
+
+function applyCam(c, cam) {
+  c.translate(cam.fx, cam.fy);
+  c.scale(cam.zoom, cam.zoom);
+  c.translate(-cam.fx, -cam.fy);
+  c.translate(-cam.C.x, -cam.C.y);
+}
+
 function render() {
-  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  uctx.setTransform(view.ui, 0, 0, view.ui, 0, 0);
+  uctx.clearRect(0, 0, VIEW_W, VIEW_H);
+  ctx.setTransform(view.rs, 0, 0, view.rs, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
   ctx.fillStyle = '#060608';
   ctx.fillRect(0, 0, VIEW_W, VIEW_H);
   if (g.state === 'loading') {
-    ctx.font = '400 14px "Inter", system-ui, sans-serif';
-    ctx.fillStyle = 'rgba(255,255,255,0.55)';
-    ctx.fillText(g.loadMsg + '…', 96, VIEW_H - 64);
+    present(null, LOOKS.sand);
+    uctx.font = '400 14px "Inter", system-ui, sans-serif';
+    uctx.fillStyle = 'rgba(255,255,255,0.55)';
+    uctx.fillText(g.loadMsg + '…', 96, VIEW_H - 64);
     return;
   }
   if (g.state === 'cine' && g.cine) {
-    g.cine.draw(ctx);
+    g.cine.drawWorld(ctx);
+    present(null, LOOKS[g.cine.shot().name] || LOOKS.space);
+    g.cine.drawUI(uctx);
     drawOverlays();
     return;
   }
-  const cam = g.cam;
-  const zoom = cam.zoom * (1 + (cam.punch || 0) * 0.035);
-  let fx0 = VIEW_W / 2, fy0 = VIEW_H / 2;
-  if (cam.focus && cam.focus.alive !== false) {
-    fx0 = clamp((g.player.cx + cam.focus.cx) / 2 - cam.x, 200, VIEW_W - 200);
-    fy0 = clamp((g.player.cy + cam.focus.cy) / 2 - cam.y, 150, VIEW_H - 150);
-  }
+  const cam = cameraNow();
+  const lightBase = g.fx.lights.length;
+  const vw = cam.view;
   ctx.save();
-  ctx.translate(fx0, fy0);
-  ctx.scale(zoom, zoom);
-  ctx.translate(-fx0, -fy0);
-  ctx.translate(-Math.round(cam.x + cam.ox), -Math.round(cam.y + cam.oy));
-  const view = { x: cam.x - 100, y: cam.y - 100, w: VIEW_W + 200, h: VIEW_H + 200 };
-  const visible = g.world.rooms.filter((r) => overlap(view, { x: r.x, y: r.y, w: r.pw, h: r.ph }));
-  for (const r of visible) drawRoomBack(r);
+  applyCam(ctx, cam);
+  for (const r of cam.visible) drawRoomBack(r);
   drawCarving();
-  drawBombBlocks(view);
-  for (const m of g.membranes) if (overlap(view, m)) drawMembrane(ctx, m.x, m.y, m.w, m.h, g.realTime, g.player.hasPhase);
-  for (const d of g.world.doors) if (overlap(view, d)) drawDoor(ctx, d, g.realTime);
-  for (const v of g.vents) if (overlap(view, { x: v.x, y: v.y - 160, w: 40, h: 170 })) drawVent(ctx, v.x, v.y, g.realTime, v.heat);
-  drawItems(view);
+  drawBombBlocks(vw);
+  for (const m of g.membranes) if (overlap(vw, m)) drawMembrane(ctx, m.x, m.y, m.w, m.h, g.realTime, g.player.hasPhase);
+  for (const d of g.world.doors) if (overlap(vw, d)) drawDoor(ctx, d, g.realTime);
+  for (const v of g.vents) if (overlap(vw, { x: v.x, y: v.y - 160, w: 40, h: 170 })) drawVent(ctx, v.x, v.y, g.realTime, v.heat);
+  drawItems(vw);
   drawPickups();
   drawHatProp();
   drawBombs();
-  for (const e of g.enemies) if (e.room === g.room?.id || overlap(view, e)) { e.draw(ctx, g); e.drawStatus(ctx, g); }
+  for (const e of g.enemies) if (e.room === g.room?.id || overlap(vw, e)) { e.draw(ctx, g); e.drawStatus(ctx, g); }
   if (g.boss) g.boss.draw(ctx, g);
   drawGhosts();
   drawPlayer();
   drawEnemyShots();
   drawShots();
-  for (const pl of g.pools) if (overlap(view, pl)) drawPool(ctx, pl.x, pl.y, pl.w, pl.h, pl.type, g.realTime);
+  for (const pl of g.pools) if (overlap(vw, pl)) drawPool(ctx, pl.x, pl.y, pl.w, pl.h, pl.type, g.realTime);
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-  g.fx.drawLights(ctx);
+  if (!glOK) g.fx.drawLights(ctx);
   g.fx.drawParts(ctx, true);
   g.fx.drawRings(ctx);
   g.fx.drawArcs(ctx);
@@ -1647,100 +1729,193 @@ function render() {
   ctx.restore();
   g.fx.drawParts(ctx, false);
   drawDevourPrompts();
-  for (const r of visible) drawRoomFront(r);
+  for (const r of cam.visible) drawRoomFront(r);
   ctx.restore();
-
-  // screen-space grade
-  ctx.drawImage(g.vignette, 0, 0);
-  if (g.player?.state === 'devour') {
-    const k = clamp(g.player.stateT / 0.2, 0, 1);
-    const grd = ctx.createRadialGradient(VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.3, VIEW_W / 2, VIEW_H / 2, VIEW_W * 0.7);
-    grd.addColorStop(0, 'rgba(120,0,70,0)');
-    grd.addColorStop(1, `rgba(120,0,70,${0.45 * k})`);
-    ctx.fillStyle = grd;
-    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-  }
-  if (g.player?.ravenousT > 0) {
-    const pulse = 0.5 + 0.5 * Math.sin(g.realTime * 5);
-    const grd = ctx.createRadialGradient(VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.45, VIEW_W / 2, VIEW_H / 2, VIEW_W * 0.75);
-    grd.addColorStop(0, 'rgba(255,40,160,0)');
-    grd.addColorStop(1, `rgba(255,40,160,${0.12 + 0.08 * pulse})`);
-    ctx.fillStyle = grd;
-    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-  }
-  if (g.hurtFlash > 0) {
-    const grd = ctx.createRadialGradient(VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.3, VIEW_W / 2, VIEW_H / 2, VIEW_W * 0.7);
-    grd.addColorStop(0, 'rgba(255,0,0,0)');
-    grd.addColorStop(1, `rgba(200,10,20,${g.hurtFlash})`);
-    ctx.fillStyle = grd;
-    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-  }
-  if (g.flashMag > 0) {
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.fillStyle = `rgba(120,10,70,${Math.min(0.5, g.flashMag) * 0.5})`;
-    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-    ctx.restore();
-  }
-  if (g.flashWhite > 0) {
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.fillStyle = `rgba(200,215,255,${Math.min(0.3, g.flashWhite)})`;
-    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-    ctx.restore();
-  }
   if (g.state === 'title') {
     ctx.fillStyle = 'rgba(4,3,3,0.45)';
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-    drawTitle(ctx, g.stateT, { options: g.menuOptions, sel: g.menuSel, label: (a) => g.input.label(a), touch: g.input.lastDevice === 'touch' });
+  }
+  present(cam, LOOKS[g.room?.theme] || LOOKS.sand);
+  // lights added while drawing belong to this frame only
+  if (g.fx.lights.length > lightBase) g.fx.lights.length = lightBase;
+
+  // everything below stays sharp: HUD, menus, subtitles, touch controls
+  drawLetterbox();
+  if (g.state === 'title') {
+    drawTitle(uctx, g.stateT, { options: g.menuOptions, sel: g.menuSel, label: (a) => g.input.label(a), touch: g.input.lastDevice === 'touch' });
     drawOverlays();
     return;
   }
-  if (g.fade > 0.001) {
-    ctx.fillStyle = `rgba(3,2,2,${g.fade})`;
-    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-  }
-  g.hud.draw(ctx, g);
-  if (g.touch) g.touch.draw(ctx, g.state === 'play' && !g.paused && !g.intro);
+  g.hud.hudAlpha = 1 - g.letterbox;
+  g.hud.draw(uctx, g);
+  if (g.touch) g.touch.draw(uctx, g.state === 'play' && !g.paused && !g.intro);
   if (g.intro && g.input.lastDevice === 'touch') {
-    ctx.font = '500 12px "Inter", system-ui, sans-serif';
-    ctx.fillStyle = 'rgba(255,255,255,0.55)';
-    ctx.fillText('SKIP ›', VIEW_W - 110, 60);
+    uctx.font = '500 12px "Inter", system-ui, sans-serif';
+    uctx.fillStyle = 'rgba(255,255,255,0.55)';
+    uctx.fillText('SKIP ›', VIEW_W - 110, 60);
   }
-  if (g.state === 'dead') drawDeath(ctx, g.deathT);
-  if (g.state === 'end') drawEnd(ctx, g.endT, g.stats, g.input.lastDevice === 'touch');
+  if (g.state === 'dead') drawDeath(uctx, g.deathT);
+  if (g.state === 'end') drawEnd(uctx, g.endT, g.stats, g.input.lastDevice === 'touch');
   if (g.paused) {
     const items = g.flags.items || 0;
-    drawPause(ctx, (a) => g.input.label(a), drawWorldMap, {
+    drawPause(uctx, (a) => g.input.label(a), drawWorldMap, {
       roomName: g.room?.name, touch: g.input.lastDevice === 'touch',
       stats: [['TIME', fmtTime(g.playTime)], ['ITEMS', `${items} / ${ITEM_TOTAL}`], ['MODE', g.diff.name]],
     });
-    if (g.touch && g.input.lastDevice === 'touch') g.touch.draw(ctx, false);
+    if (g.touch && g.input.lastDevice === 'touch') g.touch.draw(uctx, false);
   }
   drawOverlays();
 }
 
+function drawLetterbox() {
+  if (g.letterbox <= 0.002) return;
+  const h = 62 * easeInOutCubic(g.letterbox);
+  uctx.fillStyle = '#000';
+  uctx.fillRect(0, 0, VIEW_W, h);
+  uctx.fillRect(0, VIEW_H - h, VIEW_W, h);
+}
+
+// ---------------------------------------------------------------- the cinematic pass
+
+const lightsP = new Float32Array(96), lightsC = new Float32Array(96), wavesArr = new Float32Array(16);
+const heatArr = new Float32Array(4);
+let lastPresent = performance.now();
+
+function drawNormals(cam) {
+  const s = normCanvas.width / VIEW_W;
+  nctx.setTransform(1, 0, 0, 1, 0, 0);
+  nctx.clearRect(0, 0, normCanvas.width, normCanvas.height);
+  nctx.setTransform(s, 0, 0, s, 0, 0);
+  applyCam(nctx, cam);
+  for (const r of cam.visible) {
+    const A = g.art[r.id];
+    if (A && A.normal) nctx.drawImage(A.normal, r.x, r.y, r.pw, r.ph);
+  }
+  if (g.player && g.player.visible && g.player.state !== 'dead' && g.drawSamusNormals) g.drawSamusNormals(nctx);
+}
+
+function present(cam, target) {
+  const now = performance.now();
+  const dt = Math.min(0.1, (now - lastPresent) / 1000);
+  lastPresent = now;
+  easeLook(g.look, target, 1 - Math.exp(-dt * 2.4));
+  if (!glOK || !post.ok) return presentFlat();
+  const Lk = g.look;
+  let count = 0;
+  wavesArr.fill(0);
+  heatArr.fill(0);
+  let raysK = 0, raysX = 0.5, raysY = 1.2;
+  if (cam) {
+    drawNormals(cam);
+    const list = g.fx.lights.slice();
+    for (const r of cam.visible) {
+      const A = g.art[r.id];
+      if (A && A.lights) for (const l of A.lights) list.push(l);
+    }
+    count = packLights(list, cam, post.maxl, lightsP, lightsC);
+    let wi = 0;
+    for (const w of g.waves) {
+      if (wi >= 4) break;
+      const s = screenOf(cam, w.x, w.y);
+      const k = 1 - w.t / w.life;
+      wavesArr[wi * 4] = s.x;
+      wavesArr[wi * 4 + 1] = s.y;
+      wavesArr[wi * 4 + 2] = w.v * w.t * cam.zoom;
+      wavesArr[wi * 4 + 3] = w.s * k * k;
+      wi++;
+    }
+    const room = g.room;
+    if (room && Lk.heat > 0.01 && room.theme === 'magma') {
+      heatArr[0] = Lk.heat;
+      heatArr[1] = screenOf(cam, 0, room.y + 13 * TILE).y;
+      heatArr[2] = 420;
+    }
+    if (room && Lk.raysK > 0.01) {
+      const src = g.art[room.id]?.lights?.[0];
+      if (src) {
+        const s = screenOf(cam, src.x, src.y);
+        raysK = Lk.raysK;
+        raysX = s.x / VIEW_W;
+        raysY = 1 - s.y / VIEW_H;
+      }
+    }
+  }
+  const p = g.player;
+  let tint = [0, 0, 0, 0];
+  if (p && p.state === 'devour') tint = [0.47, 0, 0.27, 0.45 * clamp(p.stateT / 0.2, 0, 1)];
+  if (p && p.ravenousT > 0) {
+    const a = 0.14 + 0.08 * (0.5 + 0.5 * Math.sin(g.realTime * 5));
+    if (a > tint[3]) tint = [1, 0.16, 0.63, a];
+  }
+  if (g.hurtFlash > tint[3]) tint = [0.78, 0.04, 0.08, g.hurtFlash];
+  let flash = [0, 0, 0, 0];
+  if (g.flashWhite > 0) flash = [0.78, 0.84, 1, Math.min(0.3, g.flashWhite)];
+  const fm = Math.min(0.5, g.flashMag) * 0.5;
+  if (g.flashMag > 0 && fm > flash[3]) flash = [0.47, 0.04, 0.27, fm];
+  post.render(sceneCanvas, cam ? normCanvas : null, {
+    rs: view.rs, fx: cam ? cam.fx : VIEW_W / 2, fy: cam ? cam.fy : VIEW_H / 2, zoom: cam ? cam.zoom : 1,
+    camX: cam ? cam.C.x : 0, camY: cam ? cam.C.y : 0, time: g.realTime,
+    lightCount: count, lightsP, lightsC,
+    ambient: cam ? Lk.ambient : [1, 1, 1], mat: MAT_ARR, matW: MATW_ARR,
+    fog: cam ? Lk.fog : [0, 0, 0, 0], fogCol: Lk.fogCol, waves: wavesArr, heat: heatArr,
+    bloomThresh: Lk.bloomThresh, bloomK: Lk.bloomK, streakK: Lk.streakK, streakTint: Lk.streakTint, contrast: Lk.contrast,
+    raysK, raysX, raysY, raysTint: Lk.raysTint,
+    exposure: Lk.exposure, lift: Lk.lift, gamma: Lk.gamma, gain: Lk.gain, sat: Lk.sat,
+    shadowTint: Lk.shadowTint, highTint: Lk.highTint, vig: Lk.vig, ca: Lk.ca + g.ca, grain: Lk.grain,
+    tint, flash, fade: g.state === 'play' || g.state === 'dead' ? g.fade : 0,
+  });
+}
+
+// no WebGL: the plain picture with the old 2D touches
+function presentFlat() {
+  dctx.setTransform(1, 0, 0, 1, 0, 0);
+  dctx.drawImage(sceneCanvas, 0, 0, canvas.width, canvas.height);
+  const s = canvas.width / VIEW_W;
+  dctx.setTransform(s, 0, 0, s, 0, 0);
+  if (g.state !== 'loading' && g.state !== 'cine' && g.vignette) dctx.drawImage(g.vignette, 0, 0);
+  const p = g.player;
+  const edge = (col, a, inner = 0.3) => {
+    const grd = dctx.createRadialGradient(VIEW_W / 2, VIEW_H / 2, VIEW_H * inner, VIEW_W / 2, VIEW_H / 2, VIEW_W * 0.72);
+    grd.addColorStop(0, `rgba(${col},0)`);
+    grd.addColorStop(1, `rgba(${col},${a})`);
+    dctx.fillStyle = grd;
+    dctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  };
+  if (p && p.state === 'devour') edge('120,0,70', 0.45 * clamp(p.stateT / 0.2, 0, 1));
+  if (p && p.ravenousT > 0) edge('255,40,160', 0.12 + 0.08 * (0.5 + 0.5 * Math.sin(g.realTime * 5)), 0.45);
+  if (g.hurtFlash > 0) edge('200,10,20', g.hurtFlash);
+  dctx.globalCompositeOperation = 'lighter';
+  if (g.flashMag > 0) { dctx.fillStyle = `rgba(120,10,70,${Math.min(0.5, g.flashMag) * 0.5})`; dctx.fillRect(0, 0, VIEW_W, VIEW_H); }
+  if (g.flashWhite > 0) { dctx.fillStyle = `rgba(200,215,255,${Math.min(0.3, g.flashWhite)})`; dctx.fillRect(0, 0, VIEW_W, VIEW_H); }
+  dctx.globalCompositeOperation = 'source-over';
+  if ((g.state === 'play' || g.state === 'dead') && g.fade > 0.001) {
+    dctx.fillStyle = `rgba(3,2,2,${g.fade})`;
+    dctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  }
+}
+
 function drawOverlays() {
-  if (g.touch && g.touch.active && innerHeight > innerWidth) drawRotate(ctx);
+  if (g.touch && g.touch.active && innerHeight > innerWidth) drawRotate(uctx);
   // keys go wherever the focus is; say so when it isn't on the game
   if (!document.hasFocus() && g.input.lastDevice !== 'touch' && g.input.lastDevice !== 'pad') {
-    ctx.save();
-    ctx.font = '500 13px "Inter", system-ui, sans-serif';
+    uctx.save();
+    uctx.font = '500 13px "Inter", system-ui, sans-serif';
     const txt = 'Click the game to use the keyboard';
-    const w = ctx.measureText(txt).width + 44;
+    const w = uctx.measureText(txt).width + 44;
     const x = 380, y = 30;
-    ctx.fillStyle = 'rgba(12,12,16,0.88)';
-    ctx.beginPath();
-    ctx.roundRect ? ctx.roundRect(x, y, w, 32, 8) : ctx.rect(x, y, w, 32);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.22)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.fillStyle = 'rgba(255,62,180,0.95)';
-    ctx.beginPath(); ctx.arc(x + 18, y + 16, 3, 0, TAU); ctx.fill();
-    ctx.fillStyle = 'rgba(255,255,255,0.9)';
-    ctx.fillText(txt, x + 30, y + 21);
-    ctx.restore();
+    uctx.fillStyle = 'rgba(12,12,16,0.88)';
+    uctx.beginPath();
+    if (uctx.roundRect) uctx.roundRect(x, y, w, 32, 8);
+    else uctx.rect(x, y, w, 32);
+    uctx.fill();
+    uctx.strokeStyle = 'rgba(255,255,255,0.22)';
+    uctx.lineWidth = 1;
+    uctx.stroke();
+    uctx.fillStyle = 'rgba(255,62,180,0.95)';
+    uctx.beginPath(); uctx.arc(x + 18, y + 16, 3, 0, TAU); uctx.fill();
+    uctx.fillStyle = 'rgba(255,255,255,0.9)';
+    uctx.fillText(txt, x + 30, y + 21);
+    uctx.restore();
   }
 }
 
@@ -2128,7 +2303,7 @@ function drawItems(view) {
       ctx.fillRect(x, by - 4, 3, 8);
     }
     ctx.restore();
-    g.fx.light(x, by, 200, col, 0.45);
+    g.fx.light(x, by, 190, col, g.gl ? 0.28 : 0.45);
   }
 }
 

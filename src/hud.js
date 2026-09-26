@@ -138,10 +138,14 @@ export class HUD {
 
   draw(c, g) {
     const p = g.player;
-    if (g.showHud) {
+    const ha = this.hudAlpha ?? 1;
+    if (g.showHud && ha > 0.01) {
+      c.save();
+      c.globalAlpha = ha;
       this.drawEnergy(c, p);
       if (g.boss && g.bossFight && g.boss.state !== 'consumed') this.drawBossGauge(c, g.boss);
       else this.drawMinimap(c, g);
+      c.restore();
     }
     this.drawRoomName(c);
     this.drawSub(c);

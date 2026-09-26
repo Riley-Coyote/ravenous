@@ -150,7 +150,8 @@ export class Cinematic {
 
   // ------------------------------------------------------------ drawing
 
-  draw(c) {
+  // the picture itself: goes through the lens
+  drawWorld(c) {
     const s = this.shot();
     const t = this.t;
     c.save();
@@ -177,6 +178,10 @@ export class Cinematic {
       c.fillStyle = `rgba(3,3,5,${clamp(fade, 0, 1)})`;
       c.fillRect(0, 0, W, H);
     }
+  }
+
+  // bars, subtitles and the skip hint: stay sharp on top
+  drawUI(c) {
     // letterbox bars: this is a movie
     c.fillStyle = '#000';
     c.fillRect(0, 0, W, 54);
